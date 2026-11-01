@@ -1,3 +1,10 @@
+#ifndef DllSource
+  #define DllSource "FPSGridGenerator.dll"
+#endif
+#ifndef ManifestSource
+  #define ManifestSource "PackageContents.xml"
+#endif
+
 [Setup]
 AppName=AutoCAD FPS Grid Generator
 AppVersion=1.0.0
@@ -7,11 +14,10 @@ OutputBaseFilename=FPS_Grid_Generator_Setup
 Compression=lzma
 SolidCompression=yes
 PrivilegesRequired=admin
-OutputDir=..\bin
 
 [Files]
-Source: "PackageContents.xml"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\src\bin\Release\FPSGridGenerator.dll"; DestDir: "{app}\Contents"; Flags: ignoreversion
+Source: "{#ManifestSource}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#DllSource}"; DestDir: "{app}\Contents"; Flags: ignoreversion
 
 [Messages]
 FinishedLabel=Installation Complete! The FPS Grid Generator will automatically appear in your AutoCAD Ribbon tab and commands (GENGRID, EDITGRID) will be active.
