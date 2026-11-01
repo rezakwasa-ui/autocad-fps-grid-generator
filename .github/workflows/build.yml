@@ -20,19 +20,46 @@ jobs:
       - name: Setup NuGet
         uses: NuGet/setup-nuget@v2
 
+      - name: Find Project and Setup Files
+        id: find_files
+        shell: powershell
+        run: |
+          $csproj = (Get-ChildItem -Recurse -Filter "FPSGridGenerator.csproj" | Select-Object -First 1).FullName
+          if (-not $csproj) {
+            Write-Error "Could not find FPSGridGenerator.csproj anywhere in the repository!"
+            exit 1
+          }
+          Write-Host "Found CSProj at: $csproj"
+          "CSPROJ_PATH=$csproj" >> $env:GITHUB_ENV
+
+          $iss = (Get-ChildItem -Recurse -Filter "setup.iss" | Select-Object -First 1).FullName
+          if (-not $iss) {
+            Write-Error "Could not find setup.iss anywhere in the repository!"
+            exit 1
+          }
+          Write-Host "Found setup.iss at: $iss"
+          "ISS_PATH=$iss" >> $env:GITHUB_ENV
+
       - name: Restore NuGet Packages
-        run: nuget restore src/FPSGridGenerator.csproj
+        run: nuget restore "${{ env.CSPROJ_PATH }}"
 
       - name: Build Solution (x64 Release)
-        run: msbuild src/FPSGridGenerator.csproj /p:Configuration=Release /p:Platform=x64
+        run: msbuild "${{ env.CSPROJ_PATH }}" /p:Configuration=Release /p:Platform=x64
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
+      - name: Create Output Directory
+        run: powershell -Command "New-Item -ItemType Directory -Force -Path bin"
+
       - name: Compile Inno Setup Installer
-        run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer/setup.iss
         shell: powershell
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            $iscc = (Get-Command ISCC.exe).Source
+          }
+          & $iscc "${{ env.ISS_PATH }}"
 
       - name: Upload Installer Artifact
         uses: actions/upload-artifact@v4
