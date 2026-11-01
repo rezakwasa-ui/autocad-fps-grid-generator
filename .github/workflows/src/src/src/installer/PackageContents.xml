@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApplicationPackage 
+    SchemaVersion="1.0" 
+    AppVersion="1.0.0" 
+    Author="StructuralTools" 
+    ProductCode="{3F69D8A2-E852-4721-BCFE-89B774619C5B}" 
+    Name="FPS Auto Grid Generator" 
+    Description="Parametric FPS Grid and Dimension Generator">
+
+  <Components Description="AutoCAD 2022 to Latest Runtime">
+    <RuntimeRequirements 
+        OS="Win64" 
+        Platform="AutoCAD*" 
+        SeriesMin="R24.1" 
+        SeriesMax="R25.2" />
+    <ComponentEntry 
+        AppName="FPSGridGenerator" 
+        ModuleName="./Contents/FPSGridGenerator.dll" 
+        AppType=".Net" 
+        LoadOnAutoCADStartup="True" />
+  </Components>
+</ApplicationPackage>
