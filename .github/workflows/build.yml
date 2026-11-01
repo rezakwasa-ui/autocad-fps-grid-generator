@@ -1,0 +1,46 @@
+name: Build and Release Installer
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Restore NuGet Packages
+        run: nuget restore src/FPSGridGenerator.csproj
+
+      - name: Build Solution (x64 Release)
+        run: msbuild src/FPSGridGenerator.csproj /p:Configuration=Release /p:Platform=x64
+
+      - name: Compile Inno Setup Installer
+        uses: EssaBet/Inno-Setup-Action@v1
+        with:
+          setup-script: installer/setup.iss
+
+      - name: Upload Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FPS_Grid_Generator_Setup
+          path: bin/FPS_Grid_Generator_Setup.exe
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bin/FPS_Grid_Generator_Setup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
