@@ -81,15 +81,11 @@ namespace FPSGridGenerator
             Database db = doc.Database;
             Editor ed = doc.Editor;
 
-            // 1. Optional Property Line Selection
-            PromptEntityOptions peoBoundary = new PromptEntityOptions("\nSelect Property / Boundary Line (Press ENTER to skip): ");
+            // 1. Prompt for Property / Boundary Line
+            PromptEntityOptions peoBoundary = new PromptEntityOptions("\nSelect Property / Boundary Line (or press ENTER to use column bounds): ");
             peoBoundary.AllowNone = true;
-            peoBoundary.SetRejectMessage("\nEntity must be a Polyline or Line.");
-            peoBoundary.AddAllowedClass(typeof(Polyline), true);
-            peoBoundary.AddAllowedClass(typeof(Polyline2d), true);
-            peoBoundary.AddAllowedClass(typeof(Line), true);
-
             PromptEntityResult perBoundary = ed.GetEntity(peoBoundary);
+
             Extents3d? boundaryExtents = null;
 
             using (Transaction tr = db.TransactionManager.StartTransaction())
@@ -156,12 +152,13 @@ namespace FPSGridGenerator
                 xCoords.Sort();
                 yCoords.Sort();
 
+                // Compute drawing extents
                 double minX = xCoords.First();
                 double maxX = xCoords.Last();
                 double minY = yCoords.First();
                 double maxY = yCoords.Last();
 
-                // If property line is selected, extend bounds beyond boundary
+                // If property line was picked, extend grids fully outside the property line
                 if (boundaryExtents.HasValue)
                 {
                     minX = Math.Min(minX, boundaryExtents.Value.MinPoint.X);
@@ -170,16 +167,19 @@ namespace FPSGridGenerator
                     maxY = Math.Max(maxY, boundaryExtents.Value.MaxPoint.Y);
                 }
 
-                // FPS Parameters (Inches: 1 ft = 12 in)
-                double extension = 60.0;     // 5 ft outside boundary / outermost column
-                double bubbleRad = 16.0;     // 1'-4" bubble radius
-                double textHt = 11.0;        // 11" text height
-                double staggerOffset = 36.0; // 3 ft stagger distance to eliminate bubble collision
-                double dimOffset = 36.0;     // 3 ft distance to dimension strings
+                // Architectural FPS parameters in inches (1 ft = 12 in)
+                double extension = 72.0;       // 6'-0" extension beyond boundary/columns
+                double bubbleRad = 15.0;       // 1'-3" bubble radius (30" diameter)
+                double textHt = 11.0;          // 11" text height
+                double staggerDistance = 36.0; // 3'-0" outward shift per stagger tier
+                double dimClearance = 48.0;    // 4'-0" spacing to dimension lines
 
                 RegisterApp(tr, db);
-                ObjectId centerLinetypeId = EnsureLinetype(tr, db, "CENTER");
-                EnsureLayer(tr, db, "S-GRID-LINE", 1, centerLinetypeId); // Red + Centerline
+
+                // Load or create Centerline linetype with visible scale
+                ObjectId centerLtId = EnsureCenterLinetype(tr, db);
+
+                EnsureLayer(tr, db, "S-GRID-LINE", 1, centerLtId); // Red + Centerline
                 EnsureLayer(tr, db, "S-GRID-BUBL", 3, db.ContinuousLinetype); // Green
                 EnsureLayer(tr, db, "S-GRID-TEXT", 7, db.ContinuousLinetype); // White
                 EnsureLayer(tr, db, "S-GRID-DIMS", 2, db.ContinuousLinetype); // Yellow
@@ -187,63 +187,67 @@ namespace FPSGridGenerator
                 BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
                 BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
 
+                // Minimum distance required between bubbles to avoid collision (radius * 2 + 4" margin)
+                double bubbleClearance = (bubbleRad * 2.0) + 4.0;
+
                 // --- 1. Vertical Grids (1, 2, 3...) ---
-                int[] vLevels = CalculateStaggerLevels(xCoords, bubbleRad * 2.3);
+                int[] vTiers = CalculateMultiTierStagger(xCoords, bubbleClearance);
 
                 for (int i = 0; i < xCoords.Count; i++)
                 {
                     double x = xCoords[i];
                     string tag = (i + 1).ToString();
-                    int lvl = vLevels[i];
+                    int tier = vTiers[i]; // 0, 1, or 2
 
-                    // Main Centerline
                     Point3d pStart = new Point3d(x, minY - extension, 0);
                     Point3d pEnd = new Point3d(x, maxY + extension, 0);
 
+                    // Grid Line with Centerline Pattern
                     Line line = new Line(pStart, pEnd)
                     {
                         Layer = "S-GRID-LINE",
-                        LinetypeId = centerLinetypeId,
-                        LinetypeScale = 24.0 // Scale for 1/4" = 1'-0" standard FPS readability
+                        LinetypeId = centerLtId,
+                        LinetypeScale = 48.0 // 48x scale for clear FPS dash-dot visibility
                     };
                     AttachMetadata(line, "VERTICAL", tag);
                     btr.AppendEntity(line);
                     tr.AddNewlyCreatedDBObject(line, true);
 
-                    // Top Staggered Bubble & Jog Connector
-                    double topShift = lvl * staggerOffset;
-                    Point3d topBubblePt = new Point3d(x, maxY + extension + bubbleRad + topShift, 0);
+                    // Top Staggered Bubble
+                    double topShift = tier * staggerDistance;
+                    Point3d topBubbleCenter = new Point3d(x, maxY + extension + bubbleRad + topShift, 0);
 
-                    if (lvl > 0)
+                    if (tier > 0)
                     {
-                        Line jog = new Line(pEnd, new Point3d(x, maxY + extension + topShift, 0)) { Layer = "S-GRID-BUBL" };
-                        btr.AppendEntity(jog);
-                        tr.AddNewlyCreatedDBObject(jog, true);
+                        // Draw continuous extension line to staggered bubble
+                        Line extLine = new Line(pEnd, new Point3d(x, maxY + extension + topShift, 0)) { Layer = "S-GRID-BUBL" };
+                        btr.AppendEntity(extLine);
+                        tr.AddNewlyCreatedDBObject(extLine, true);
                     }
-                    CreateBubble(btr, tr, topBubblePt, bubbleRad, tag, textHt);
+                    CreateBubble(btr, tr, topBubbleCenter, bubbleRad, tag, textHt);
 
-                    // Bottom Staggered Bubble & Jog Connector
-                    double botShift = lvl * staggerOffset;
-                    Point3d botBubblePt = new Point3d(x, minY - extension - bubbleRad - botShift, 0);
+                    // Bottom Staggered Bubble
+                    double botShift = tier * staggerDistance;
+                    Point3d botBubbleCenter = new Point3d(x, minY - extension - bubbleRad - botShift, 0);
 
-                    if (lvl > 0)
+                    if (tier > 0)
                     {
-                        Line jog = new Line(pStart, new Point3d(x, minY - extension - botShift, 0)) { Layer = "S-GRID-BUBL" };
-                        btr.AppendEntity(jog);
-                        tr.AddNewlyCreatedDBObject(jog, true);
+                        Line extLine = new Line(pStart, new Point3d(x, minY - extension - botShift, 0)) { Layer = "S-GRID-BUBL" };
+                        btr.AppendEntity(extLine);
+                        tr.AddNewlyCreatedDBObject(extLine, true);
                     }
-                    CreateBubble(btr, tr, botBubblePt, bubbleRad, tag, textHt);
+                    CreateBubble(btr, tr, botBubbleCenter, bubbleRad, tag, textHt);
                 }
 
-                // Vertical Bay Dimensions (Placed above highest staggered bubble)
-                double maxTopY = maxY + extension + bubbleRad + (vLevels.Max() * staggerOffset);
+                // Vertical Dimensions (Placed above the highest staggered bubble tier)
+                double maxTopY = maxY + extension + bubbleRad + (vTiers.Max() * staggerDistance);
                 for (int i = 0; i < xCoords.Count - 1; i++)
                 {
                     Point3d pt1 = new Point3d(xCoords[i], maxTopY, 0);
                     Point3d pt2 = new Point3d(xCoords[i + 1], maxTopY, 0);
-                    Point3d dimLinePt = new Point3d(xCoords[i], maxTopY + dimOffset, 0);
+                    Point3d dimPt = new Point3d(xCoords[i], maxTopY + dimClearance, 0);
 
-                    RotatedDimension rotDim = new RotatedDimension(0.0, pt1, pt2, dimLinePt, "<>", db.Dimstyle)
+                    RotatedDimension rotDim = new RotatedDimension(0.0, pt1, pt2, dimPt, "<>", db.Dimstyle)
                     {
                         Layer = "S-GRID-DIMS"
                     };
@@ -253,264 +257,54 @@ namespace FPSGridGenerator
 
                 // --- 2. Horizontal Grids (A, B, C...) ---
                 string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-                int[] hLevels = CalculateStaggerLevels(yCoords, bubbleRad * 2.3);
+                int[] hTiers = CalculateMultiTierStagger(yCoords, bubbleClearance);
 
                 for (int j = 0; j < yCoords.Count; j++)
                 {
                     double y = yCoords[j];
                     string tag = j < 26 ? alphabet[j].ToString() : "A" + (j - 25);
-                    int lvl = hLevels[j];
+                    int tier = hTiers[j]; // 0, 1, or 2
 
-                    // Main Centerline
                     Point3d pStart = new Point3d(minX - extension, y, 0);
                     Point3d pEnd = new Point3d(maxX + extension, y, 0);
 
                     Line line = new Line(pStart, pEnd)
                     {
                         Layer = "S-GRID-LINE",
-                        LinetypeId = centerLinetypeId,
-                        LinetypeScale = 24.0
+                        LinetypeId = centerLtId,
+                        LinetypeScale = 48.0
                     };
                     AttachMetadata(line, "HORIZONTAL", tag);
                     btr.AppendEntity(line);
                     tr.AddNewlyCreatedDBObject(line, true);
 
-                    // Left Staggered Bubble & Jog
-                    double leftShift = lvl * staggerOffset;
-                    Point3d leftBubblePt = new Point3d(minX - extension - bubbleRad - leftShift, y, 0);
+                    // Left Staggered Bubble
+                    double leftShift = tier * staggerDistance;
+                    Point3d leftBubbleCenter = new Point3d(minX - extension - bubbleRad - leftShift, y, 0);
 
-                    if (lvl > 0)
+                    if (tier > 0)
                     {
-                        Line jog = new Line(pStart, new Point3d(minX - extension - leftShift, y, 0)) { Layer = "S-GRID-BUBL" };
-                        btr.AppendEntity(jog);
-                        tr.AddNewlyCreatedDBObject(jog, true);
+                        Line extLine = new Line(pStart, new Point3d(minX - extension - leftShift, y, 0)) { Layer = "S-GRID-BUBL" };
+                        btr.AppendEntity(extLine);
+                        tr.AddNewlyCreatedDBObject(extLine, true);
                     }
-                    CreateBubble(btr, tr, leftBubblePt, bubbleRad, tag, textHt);
+                    CreateBubble(btr, tr, leftBubbleCenter, bubbleRad, tag, textHt);
 
-                    // Right Staggered Bubble & Jog
-                    double rightShift = lvl * staggerOffset;
-                    Point3d rightBubblePt = new Point3d(maxX + extension + bubbleRad + rightShift, y, 0);
+                    // Right Staggered Bubble
+                    double rightShift = tier * staggerDistance;
+                    Point3d rightBubbleCenter = new Point3d(maxX + extension + bubbleRad + rightShift, y, 0);
 
-                    if (lvl > 0)
+                    if (tier > 0)
                     {
-                        Line jog = new Line(pEnd, new Point3d(maxX + extension + rightShift, y, 0)) { Layer = "S-GRID-BUBL" };
-                        btr.AppendEntity(jog);
-                        tr.AddNewlyCreatedDBObject(jog, true);
+                        Line extLine = new Line(pEnd, new Point3d(maxX + extension + rightShift, y, 0)) { Layer = "S-GRID-BUBL" };
+                        btr.AppendEntity(extLine);
+                        tr.AddNewlyCreatedDBObject(extLine, true);
                     }
-                    CreateBubble(btr, tr, rightBubblePt, bubbleRad, tag, textHt);
+                    CreateBubble(btr, tr, rightBubbleCenter, bubbleRad, tag, textHt);
                 }
 
-                // Horizontal Bay Dimensions (Placed to left of outermost bubble)
-                double minLeftX = minX - extension - bubbleRad - (hLevels.Max() * staggerOffset);
+                // Horizontal Dimensions (Placed to the left of the outermost staggered bubble tier)
+                double minLeftX = minX - extension - bubbleRad - (hTiers.Max() * staggerDistance);
                 for (int j = 0; j < yCoords.Count - 1; j++)
                 {
-                    Point3d pt1 = new Point3d(minLeftX, yCoords[j], 0);
-                    Point3d pt2 = new Point3d(minLeftX, yCoords[j + 1], 0);
-                    Point3d dimLinePt = new Point3d(minLeftX - dimOffset, yCoords[j], 0);
-
-                    RotatedDimension rotDim = new RotatedDimension(Math.PI / 2.0, pt1, pt2, dimLinePt, "<>", db.Dimstyle)
-                    {
-                        Layer = "S-GRID-DIMS"
-                    };
-                    btr.AppendEntity(rotDim);
-                    tr.AddNewlyCreatedDBObject(rotDim, true);
-                }
-
-                tr.Commit();
-                ed.WriteMessage($"\nGenerated non-overlapping centerline grids for {xCoords.Count} X-Bays and {yCoords.Count} Y-Bays outside property limits.");
-            }
-        }
-
-        [CommandMethod("EDITGRID")]
-        public void EditGrid()
-        {
-            Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
-            if (doc == null) return;
-            Database db = doc.Database;
-            Editor ed = doc.Editor;
-
-            PromptEntityOptions peo = new PromptEntityOptions("\nSelect a grid line to edit: ");
-            peo.SetRejectMessage("\nMust be a line entity.");
-            peo.AddAllowedClass(typeof(Line), true);
-
-            PromptEntityResult per = ed.GetEntity(peo);
-            if (per.Status != PromptStatus.OK) return;
-
-            using (Transaction tr = db.TransactionManager.StartTransaction())
-            {
-                Line line = (Line)tr.GetObject(per.ObjectId, OpenMode.ForRead);
-                ResultBuffer rb = line.GetXDataForApplication(AppName);
-
-                if (rb == null)
-                {
-                    ed.WriteMessage("\nNo grid data attached to this line.");
-                    return;
-                }
-
-                TypedValue[] tv = rb.AsArray();
-                string curOrientation = tv[1].Value.ToString();
-                string curTag = tv[2].Value.ToString();
-
-                PromptStringOptions pso = new PromptStringOptions($"\nEnter new grid label [{curTag}]: ");
-                PromptResult pr = ed.GetString(pso);
-                if (pr.Status == PromptStatus.OK && !string.IsNullOrWhiteSpace(pr.StringResult))
-                {
-                    line.UpgradeOpen();
-                    AttachMetadata(line, curOrientation, pr.StringResult.Trim().ToUpper());
-                    ed.WriteMessage($"\nLabel updated to {pr.StringResult.Trim().ToUpper()}.");
-                }
-                tr.Commit();
-            }
-        }
-
-        // Computes 0 or 1 stagger level whenever adjacent axes are closer than clearanceThreshold
-        private int[] CalculateStaggerLevels(List<double> coords, double clearanceThreshold)
-        {
-            int n = coords.Count;
-            int[] levels = new int[n];
-            for (int i = 1; i < n; i++)
-            {
-                if (Math.Abs(coords[i] - coords[i - 1]) < clearanceThreshold)
-                {
-                    levels[i] = (levels[i - 1] == 0) ? 1 : 0;
-                }
-                else
-                {
-                    levels[i] = 0;
-                }
-            }
-            return levels;
-        }
-
-        private List<Point3d> ExtractCenters(Transaction tr, SelectionSet ss)
-        {
-            List<Point3d> centers = new List<Point3d>();
-            foreach (SelectedObject so in ss)
-            {
-                if (so == null) continue;
-                Entity ent = tr.GetObject(so.ObjectId, OpenMode.ForRead) as Entity;
-                if (ent == null) continue;
-
-                if (ent is Circle circle)
-                {
-                    centers.Add(circle.Center);
-                }
-                else
-                {
-                    try
-                    {
-                        Extents3d ext = ent.GeometricExtents;
-                        centers.Add(new Point3d((ext.MinPoint.X + ext.MaxPoint.X) / 2.0, (ext.MinPoint.Y + ext.MaxPoint.Y) / 2.0, 0));
-                    }
-                    catch { }
-                }
-            }
-            return centers;
-        }
-
-        private List<double> ClusterCoordinates(List<double> raw, double tol)
-        {
-            List<double> clustered = new List<double>();
-            foreach (double val in raw.OrderBy(v => v))
-            {
-                if (!clustered.Any(c => Math.Abs(c - val) <= tol))
-                    clustered.Add(val);
-            }
-            return clustered;
-        }
-
-        private void CreateBubble(BlockTableRecord btr, Transaction tr, Point3d center, double rad, string text, double textHt)
-        {
-            Circle c = new Circle(center, Vector3d.ZAxis, rad) { Layer = "S-GRID-BUBL" };
-            btr.AppendEntity(c);
-            tr.AddNewlyCreatedDBObject(c, true);
-
-            DBText t = new DBText
-            {
-                Position = center,
-                Height = textHt,
-                TextString = text,
-                Layer = "S-GRID-TEXT",
-                HorizontalMode = TextHorizontalMode.TextCenter,
-                VerticalMode = TextVerticalMode.TextVerticalMid,
-                AlignmentPoint = center
-            };
-            btr.AppendEntity(t);
-            tr.AddNewlyCreatedDBObject(t, true);
-        }
-
-        private void AttachMetadata(Line line, string orient, string tag)
-        {
-            line.XData = new ResultBuffer(
-                new TypedValue((int)DxfCode.ExtendedDataRegAppName, AppName),
-                new TypedValue((int)DxfCode.ExtendedDataAsciiString, orient),
-                new TypedValue((int)DxfCode.ExtendedDataAsciiString, tag)
-            );
-        }
-
-        private void RegisterApp(Transaction tr, Database db)
-        {
-            RegAppTable rat = (RegAppTable)tr.GetObject(db.RegAppTableId, OpenMode.ForRead);
-            if (!rat.Has(AppName))
-            {
-                rat.UpgradeOpen();
-                RegAppTableRecord rtr = new RegAppTableRecord { Name = AppName };
-                rat.Add(rtr);
-                tr.AddNewlyCreatedDBObject(rtr, true);
-            }
-        }
-
-        private ObjectId EnsureLinetype(Transaction tr, Database db, string ltName)
-        {
-            LinetypeTable lt = (LinetypeTable)tr.GetObject(db.LinetypeTableId, OpenMode.ForRead);
-            if (lt.Has(ltName)) return lt[ltName];
-
-            try
-            {
-                db.LoadLineTypeFile(ltName, "acad.lin");
-                if (lt.Has(ltName)) return lt[ltName];
-            }
-            catch { }
-
-            return db.ContinuousLinetype;
-        }
-
-        private void EnsureLayer(Transaction tr, Database db, string name, short colorIdx, ObjectId linetypeId)
-        {
-            LayerTable lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
-            if (!lt.Has(name))
-            {
-                lt.UpgradeOpen();
-                LayerTableRecord ltr = new LayerTableRecord
-                {
-                    Name = name,
-                    Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByAci, colorIdx),
-                    LinetypeObjectId = linetypeId
-                };
-                lt.Add(ltr);
-                tr.AddNewlyCreatedDBObject(ltr, true);
-            }
-            else
-            {
-                LayerTableRecord ltr = (LayerTableRecord)tr.GetObject(lt[name], OpenMode.ForWrite);
-                ltr.LinetypeObjectId = linetypeId;
-            }
-        }
-    }
-
-    public class SimpleRelayCommand : System.Windows.Input.ICommand
-    {
-        private readonly string _cmd;
-        public SimpleRelayCommand(string cmd) => _cmd = cmd;
-        public bool CanExecute(object parameter) => true;
-        public event EventHandler CanExecuteChanged { add { } remove { } }
-        public void Execute(object parameter)
-        {
-            Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
-            if (doc != null)
-            {
-                doc.SendStringToExecute(_cmd, true, false, false);
-            }
-        }
-    }
-}
+                    Point3d pt1 = new Point3d(
