@@ -20,17 +20,13 @@ jobs:
       - name: Setup NuGet
         uses: NuGet/setup-nuget@v2
 
-      - name: Locate Files
+      - name: Locate Project File
         id: locate
         shell: powershell
         run: |
           $csproj = (Get-ChildItem -Recurse -Filter "FPSGridGenerator.csproj" | Select-Object -First 1).FullName
           Write-Host "Found CSProj: $csproj"
           echo "CSPROJ=$csproj" >> $env:GITHUB_ENV
-
-          $iss = (Get-ChildItem -Recurse -Filter "setup.iss" | Select-Object -First 1).FullName
-          Write-Host "Found ISS: $iss"
-          echo "ISS_PATH=$iss" >> $env:GITHUB_ENV
 
       - name: Restore NuGet Packages
         run: nuget restore "${{ env.CSPROJ }}"
@@ -41,17 +37,36 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
-      - name: Create Output Directory
-        run: powershell -Command "New-Item -ItemType Directory -Force -Path bin"
-
-      - name: Compile Inno Setup Installer
+      - name: Prepare Installer Paths & Run Inno Setup
         shell: powershell
         run: |
+          # 1. Create root output directory
+          $outDir = Join-Path $PWD "bin"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+          # 2. Find compiled DLL, Manifest, and ISS script
+          $dll = (Get-ChildItem -Recurse -Filter "FPSGridGenerator.dll" | Where-Object { $_.FullName -like "*bin\Release*" } | Select-Object -First 1).FullName
+          $manifest = (Get-ChildItem -Recurse -Filter "PackageContents.xml" | Select-Object -First 1).FullName
+          $iss = (Get-ChildItem -Recurse -Filter "setup.iss" | Select-Object -First 1).FullName
+
+          Write-Host "DLL: $dll"
+          Write-Host "Manifest: $manifest"
+          Write-Host "ISS: $iss"
+          Write-Host "Output: $outDir"
+
+          if (-not $dll -or -not $manifest -or -not $iss) {
+            Write-Error "Missing critical build files!"
+            exit 1
+          }
+
+          # 3. Locate ISCC compiler
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) {
             $iscc = (Get-Command ISCC.exe).Source
           }
-          & $iscc "${{ env.ISS_PATH }}"
+
+          # 4. Compile with injected absolute paths
+          & $iscc "/O$outDir" "/DDllSource=$dll" "/DManifestSource=$manifest" "$iss"
 
       - name: Upload Installer Artifact
         uses: actions/upload-artifact@v4
