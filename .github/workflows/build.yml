@@ -20,31 +20,23 @@ jobs:
       - name: Setup NuGet
         uses: NuGet/setup-nuget@v2
 
-      - name: Find Project and Setup Files
-        id: find_files
+      - name: Locate Files
+        id: locate
         shell: powershell
         run: |
           $csproj = (Get-ChildItem -Recurse -Filter "FPSGridGenerator.csproj" | Select-Object -First 1).FullName
-          if (-not $csproj) {
-            Write-Error "Could not find FPSGridGenerator.csproj anywhere in the repository!"
-            exit 1
-          }
-          Write-Host "Found CSProj at: $csproj"
-          "CSPROJ_PATH=$csproj" >> $env:GITHUB_ENV
+          Write-Host "Found CSProj: $csproj"
+          echo "CSPROJ=$csproj" >> $env:GITHUB_ENV
 
           $iss = (Get-ChildItem -Recurse -Filter "setup.iss" | Select-Object -First 1).FullName
-          if (-not $iss) {
-            Write-Error "Could not find setup.iss anywhere in the repository!"
-            exit 1
-          }
-          Write-Host "Found setup.iss at: $iss"
-          "ISS_PATH=$iss" >> $env:GITHUB_ENV
+          Write-Host "Found ISS: $iss"
+          echo "ISS_PATH=$iss" >> $env:GITHUB_ENV
 
       - name: Restore NuGet Packages
-        run: nuget restore "${{ env.CSPROJ_PATH }}"
+        run: nuget restore "${{ env.CSPROJ }}"
 
       - name: Build Solution (x64 Release)
-        run: msbuild "${{ env.CSPROJ_PATH }}" /p:Configuration=Release /p:Platform=x64
+        run: msbuild "${{ env.CSPROJ }}" /p:Configuration=Release /p:Platform=x64
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
