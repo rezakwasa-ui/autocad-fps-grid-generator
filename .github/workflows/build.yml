@@ -26,10 +26,13 @@ jobs:
       - name: Build Solution (x64 Release)
         run: msbuild src/FPSGridGenerator.csproj /p:Configuration=Release /p:Platform=x64
 
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
       - name: Compile Inno Setup Installer
-        uses: EssaBet/Inno-Setup-Action@v1
-        with:
-          setup-script: installer/setup.iss
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer/setup.iss
+        shell: powershell
 
       - name: Upload Installer Artifact
         uses: actions/upload-artifact@v4
