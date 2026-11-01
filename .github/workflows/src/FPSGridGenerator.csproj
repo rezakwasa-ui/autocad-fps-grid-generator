@@ -34,8 +34,7 @@
     <PackageReference Include="AutoCAD.NET.Core" Version="24.1.511" ExcludeAssets="runtime" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="GridCommands.cs" />
-    <Compile Include="RibbonManager.cs" />
+    <Compile Include="**\*.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
